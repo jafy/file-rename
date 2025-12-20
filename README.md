@@ -21,10 +21,10 @@ An OpenAI Assistant (API) for renaming files base on their contents, using Pytho
     `python3 file_renamer_asst.py --asst_create`
 
 ## Usage, overview
-File types currently supported: .txt, .csv, .pdf, .docx, .xlsx, .jpg, .jpeg, .png
-Please submit requests for additionally desired file types. 
+File types currently supported: .txt, .csv, .pdf, .docx, .xlsx, .jpg, .jpeg, .png  
+Please submit requests for additional file types.
 
-Renamed files are saved to new *renamed/* subdirectory in target directory, with originals left as is.
+Renames now happen **in place**. Use `--dry_run` to preview without writing.
 
 EXTRACTION_PERCENT variable may need to be adjusted to achieving accurate new file names, while still preserving file privacy.
 
@@ -33,32 +33,29 @@ Disclaimer: This assistant does **not** upload files directly to OpenAI, but rat
 All the included functions are not necessarily used for renaming files, but are nonetheless included for user customization purposes, as well as to provide a demonstrative, documented, example of how to create and use OpenAI Assistants API.
 
 ```
-usage: file_renaming_asst.py [-h] [--asst_create] [--asst_update] [--asst_file_upload ASST_FILE_UPLOAD] [--files_list] [--file_delete FILE_DELETE]
-                             [--files_rename FILES_RENAME] [--query_new QUERY_NEW] [--query_last_thread QUERY_LAST_THREAD]
-                             [--get_steps GET_STEPS GET_STEPS] [--get_thread GET_THREAD] [--delete_thread DELETE_THREAD] [--verbose]
+usage: file_renaming_asst.py [-h] [--files_rename FILES_RENAME] [--dry_run] [--verbose] [--extraction_percent EXTRACTION_PERCENT]
+                             [--max_preview_chars MAX_PREVIEW_CHARS] [--disable_pdf_images] [--disable_vision] [--model MODEL] [--vision_model VISION_MODEL]
+                             [--price_in PRICE_IN] [--price_out PRICE_OUT] [--openai_log_level {debug,info,warning,error,critical,none}]
 
-OpenAI Assistant to rename files in a given directory.
+Rename files in a directory based on content using OpenAI Responses API.
 
-optional arguments:
+options:
   -h, --help            show this help message and exit
-  --asst_create, -ac    Create the Assistant
-  --asst_update, -au    Update the Assistant
-  --asst_file_upload ASST_FILE_UPLOAD, -afu ASST_FILE_UPLOAD
-                        Upload file for Assistant to retrieve; input: file_path
-  --files_list, -fl     List organization's files
-  --file_delete FILE_DELETE, -fd FILE_DELETE
-                        Delete file; input: file_id
   --files_rename FILES_RENAME, -fr FILES_RENAME
-                        Rename all files in directory; input: dir_path
-  --query_new QUERY_NEW, -qn QUERY_NEW
-                        Create new thread and run query
-  --query_last_thread QUERY_LAST_THREAD, -qlt QUERY_LAST_THREAD
-                        Append query to last thread
-  --get_steps GET_STEPS GET_STEPS, -gs GET_STEPS GET_STEPS
-                        Get the run steps; input: thread_id, run_id
-  --get_thread GET_THREAD, -gt GET_THREAD
-                        Get the thread; input: thread_id, "new"
-  --delete_thread DELETE_THREAD, -dt DELETE_THREAD
-                        Delete the thread; input: thread_id
-  --verbose, -v         Enable verbose output
+                        Directory containing files to rename
+  --dry_run, -dr        Preview renames without writing
+  --verbose, -v         Verbose logging
+  --extraction_percent EXTRACTION_PERCENT, -p EXTRACTION_PERCENT
+                        Percent of file to sample from the start (1-100)
+  --max_preview_chars MAX_PREVIEW_CHARS, -mpc MAX_PREVIEW_CHARS
+                        Maximum characters of extracted text to send to the model (omit for no limit)
+  --disable_pdf_images  Skip image-based extraction for PDFs
+  --disable_vision      Skip vision model extraction for images
+  --model MODEL         OpenAI model to use (default: gpt-5.2)
+  --vision_model VISION_MODEL
+                        OpenAI vision-capable model for OCR fallback (default: gpt-4o)
+  --price_in PRICE_IN   Override input cost per 1M tokens for the chosen model
+  --price_out PRICE_OUT Override output cost per 1M tokens for the chosen model
+  --openai_log_level {debug,info,warning,error,critical,none}
+                        OpenAI client log level (default: none to suppress HTTP debug).
 ```

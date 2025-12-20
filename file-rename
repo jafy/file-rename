@@ -1,0 +1,36 @@
+#!/bin/bash
+
+# File Renaming Assistant Wrapper Script
+# This script activates the virtual environment and runs the file renaming assistant
+
+SCRIPT_DIR="/Users/jeff/Documents/Personal/Code/asst-file-renamer"
+VENV_PATH="$SCRIPT_DIR/venv"
+SCRIPT_PATH="$SCRIPT_DIR/file_renaming_asst.py"
+ORIGINAL_DIR="$PWD"
+
+# Convert relative paths to absolute paths
+ARGS=()
+for arg in "$@"; do
+    # Check if this looks like a relative path (not starting with - and not an absolute path)
+    if [[ "$arg" =~ ^\./ ]] || ([[ "$arg" =~ ^[^/-] ]] && [[ -e "$arg" || "$arg" =~ / ]]); then
+        # Convert to absolute path
+        ARGS+=("$ORIGINAL_DIR/$arg")
+    else
+        ARGS+=("$arg")
+    fi
+done
+
+# Change to script directory
+cd "$SCRIPT_DIR" || {
+    echo "Error: Cannot change to script directory: $SCRIPT_DIR"
+    exit 1
+}
+
+# Activate virtual environment
+source "$VENV_PATH/bin/activate" || {
+    echo "Error: Cannot activate virtual environment: $VENV_PATH"
+    exit 1
+}
+
+# Run the Python script with processed arguments
+python "$SCRIPT_PATH" "${ARGS[@]}"

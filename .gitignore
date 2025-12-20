@@ -2,3 +2,6 @@
 credentials.json
 threads.csv
 test-files/
+venv/
+__pycache__/
+*.pyc

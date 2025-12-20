@@ -1,499 +1,596 @@
 import argparse
-import csv
+import base64
+import io
+import json
+import logging
 import os
 import re
-import sys
-import time
-import json
-from pprint import pprint
-import subprocess
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, Sequence
+
 import openai
-from PIL import Image
-import pytesseract
-import PyPDF2
-from docx import Document
-import openpyxl
 import pandas as pd
+import PyPDF2
+import pytesseract
+from docx import Document
+from openpyxl import load_workbook
+from pdf2image import convert_from_path
+from PIL import Image
 
 
-# globals
-
-verbose = False
-
-CREDS = 'credentials.json'
-THREADS_CSV = 'threads.csv'
-EXTRACTION_PERCENT = 10 # % of leading text to extract from files
-
-asst_name = "File Renamer Assistant"
-asst_instructions="""You help users rename files by generating a concise and descriptive new name based on the file text content 
-    and calling rename_file function.
-    """
-asst_model="gpt-4-1106-preview" # models: gpt-3.5-turbo, gpt-4-1106-preview
-
-orig_file_names = {}
-dir_to_rename = None
-
-# assistant functions
-
-def rename_uploaded_file(old_name, new_name):
-    new_dir = f'{dir_to_rename}renamed/'
-    if dir_to_rename and not os.path.exists(new_dir):
-        os.makedirs(new_dir)
-
-    try: # replace uploaded f_id with old file name
-        old_name = orig_file_names[old_name]
-    except KeyError:
-        pass
-    if verbose:
-        print(f'Renaming {old_name} to {new_name}')
-    command = ['cp', f'{dir_to_rename}{old_name}', f'{new_dir}{new_name}']
-    result = subprocess.run(command, capture_output=True, text=True)
-    return result.stdout if result.returncode == 0 else result.stderr
-
-def rename_file(old_name, new_name):
-    new_dir = f'{dir_to_rename}renamed/'
-    if dir_to_rename and not os.path.exists(new_dir):
-        os.makedirs(new_dir)
-    if verbose:
-        print(f'Renaming {old_name} to {new_name}')
-    command = ['cp', f'{dir_to_rename}{old_name}', f'{new_dir}{new_name}']
-    result = subprocess.run(command, capture_output=True, text=True)
-    return result.stdout if result.returncode == 0 else result.stderr
-
-# assistant function interfaces
-
-rename_uploaded_file_interface = {
-    "name": "rename_uploaded_file",
-    "description": """Renames the input file by passing old_name and new_name VALID JSON arguments, 
-        e.g. \"arguments\": \"{\"old_name\":\"old_name.txt\", \"new_name\":\"new_name.txt\"}\"""",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "old_name": {
-                "type": "string",
-                "description": "The old name of the file, including it's extension; e.g. old_name.ext, NOT file_########"
-            },
-            "new_name": {
-                "type": "string",
-                "description": "The new name of the file, including it's extension; e.g. new_name.ext"
-            }},
-        "required": ["old_name", "new_name"]
-    },}
-
-rename_file_interface = {
-    "name": "rename_file",
-    "description": "Renames the input file by passing in <new_name>",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "old_name": {
-                "type": "string",
-                "description": "The old name of the file, including it's extension; e.g. old_name.ext"
-            },
-            "new_name": {
-                "type": "string",
-                "description": "The new name of the file, including the same extension as old_name; e.g. new_descriptive_name.ext"
-            }},
-        "required": ["old_name", "new_name"]
-    },}
-
-# assistant tools
-asst_tools=[#{"type": "code_interpreter"},
-            #{"type": "retrieval"},
-            #{"type": "function", "function": rename_uploaded_file_interface},
-            {"type": "function", "function": rename_file_interface},
-        ]
-
-# init
-
-def get_creds():
-    with open(CREDS, 'r') as file:
-        return json.load(file)
-def get_asst_id():
-    creds = get_creds()
-    try:
-        return creds['asst_id']
-    except KeyError as e:
-        print()
-        return None
-
-creds = get_creds()
-client = openai.OpenAI(api_key=creds['openai_api_key'])
+SCRIPT_DIR = Path(__file__).resolve().parent
+CREDS_PATH = SCRIPT_DIR / "credentials.json"
+DEFAULT_MODEL = "gpt-5.2"
+DEFAULT_VISION_MODEL = "gpt-4o"
+FILENAME_MAX_LEN = 50
+DATE_PREFIX_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2} - ")
+ISO_DATE_PATTERN = re.compile(r"(\d{4})[-/](\d{2})[-/](\d{2})")
+SHORT_DATE_PATTERN = re.compile(
+    r"(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})"
+)  # for MM/DD/YYYY or similar
+MONTH_NAME_PATTERN = re.compile(
+    r"\b("
+    r"January|February|March|April|May|June|July|August|September|October|November|December|"
+    r"Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec"
+    r")\s+(\d{1,2})(?:st|nd|rd|th)?[\s,]+(\d{2,4})",
+    re.IGNORECASE,
+)
 
 
-# funcs
+asst_instructions = """You help users rename files by generating a concise and descriptive new name based on the file text content.
 
-def show_json(obj):
-    pprint(json.loads(obj.model_dump_json()))
+IMPORTANT NAMING RULES:
+1. Always prepend the filename with a date in YYYY-MM-DD format representing the earliest date found in the document content (dates, filing dates, effective dates, etc.), followed by " - ". Use only dates you can clearly see in the document text.
+2. Use spaces between words instead of underscores or hyphens.
+3. NEVER include business names, company names, or organization names in the filename as these are redundant.
+4. Keep the total filename length under 50 characters including spaces and the file extension.
+5. Focus on the document TYPE and PURPOSE rather than who created it.
+Respond with JSON only: {"new_name": "<proposed filename including extension>"}.
+"""
 
-def pprint_thread(thread):
-    print("# Thread", thread)
-    messages = client.beta.threads.messages.list(thread_id=thread.id, order="asc")
-    return pprint_msgs(messages)
 
-def pprint_msgs(messages):
-    if verbose: print("Messages:")
-    
-    msg_str = ""
-    for m in messages:
-        line = f"{m.role}: {m.content[0].text.value}"
-        if verbose:
-            print(line)
-            msg_str += line + '\n'
+@dataclass
+class ExtractionOptions:
+    percent: int = 100  # percentage of the leading content to use
+    use_pdf_images: bool = True
+    use_vision: bool = True
+    max_preview_chars: Optional[int] = None
 
-    if not verbose:
-        print(line) # last line
-        msg_str += line + '\n'
-    
-    return msg_str
 
-def create_assistant():
-    asst_id = get_asst_id()
-    if asst_id:
-        print(f'Assistant already created: {asst_id}')
-        sys.exit(1)
+@dataclass
+class Pricing:
+    input_per_million: float
+    output_per_million: float
 
-    response = client.beta.assistants.create(name=asst_name, instructions=asst_instructions, model=asst_model, tools=asst_tools)
-    # save assistant id to credentials
-    asst_id = {'asst_id': f'{response.id}'}
-    with open(CREDS, 'r+') as file:
-        data = json.load(file)
-        data.update(asst_id)
-        file.seek(0)
-        json.dump(data, file, indent=4)
-        file.truncate()
-    print(f'Created Assistant: {response.id}')
-    print(f'asst_id saved to credentials.json')
-    return response
 
-def update_assistant():
-    asst_id = get_asst_id()
-    client.beta.assistants.update(asst_id, name=asst_name, instructions=asst_instructions, model=asst_model, tools=asst_tools)
-    
-    print(f"Updated Assistant: {asst_id}")
+MODEL_PRICING: dict[str, Pricing] = {
+    # Override via CLI flags if these differ from your account pricing.
+    "gpt-5.2": Pricing(input_per_million=5.0, output_per_million=15.0),
+    "gpt-4o": Pricing(input_per_million=5.0, output_per_million=15.0),
+}
 
-def file_delete(f_id):
-    response = client.files.delete(f_id)
-    print(response)
 
-def upload_file_for_asst(file_path):
-    # check if file exists
-    if not os.path.exists(file_path):
-        print(f'Error: file {file_path} does not exist')
-        sys.exit(1)
+class FileRenamerAssistant:
+    def __init__(
+        self,
+        client: openai.OpenAI,
+        *,
+        options: ExtractionOptions,
+        verbose: bool = False,
+        dry_run: bool = False,
+        model: str = DEFAULT_MODEL,
+        vision_model: str = DEFAULT_VISION_MODEL,
+        pricing: Optional[Pricing] = None,
+    ):
+        self.client = client
+        self.options = options
+        self.dry_run = dry_run
+        self.model = model
+        self.vision_model = vision_model
+        self.pricing = pricing
+        self.logger = logging.getLogger("file_renamer")
+        self.logger.setLevel(logging.DEBUG if verbose else logging.INFO)
 
-    asst_id = get_asst_id()
+    def rename_directory(self, dir_path: Path) -> None:
+        if not dir_path.is_dir():
+            raise ValueError(f"Not a directory: {dir_path}")
 
-    response = client.files.create(
-        file=open(file_path, "rb"),
-        purpose="assistants")
-    try:
-        asst_file = client.beta.assistants.files.create(
-        assistant_id=asst_id,
-        file_id=response.id
+        files = sorted(
+            [p for p in dir_path.iterdir() if p.is_file() and not p.name.startswith(".")]
         )
-        print(asst_file)
-    except Exception as e:
-        print(e)
-        file_delete(response.id)
-        return None
-    
-    return response.id
+        if not files:
+            self.logger.info("No files found to rename in %s", dir_path)
+            return
 
-def get_slice_size(total):
-    slice_len = int(total * EXTRACTION_PERCENT / 100) # Calculate the slice length as integer
-
-    if not slice_len: # slice_len = 0
-        raise ValueError('Error: No text extracted. EXTRACTION_PERCENT needs to be increased to rename this file.')
-    return slice_len
-
-def extract_text_from_file(file_path):
-    file_extension = os.path.splitext(file_path)[1].lower()
-
-    if file_extension in ['.txt']:
-        with open(file_path, 'r') as file:
-            content = file.readlines()
-            return ''.join(content[:get_slice_size(len(content))])
-
-    elif file_extension in ['.pdf']:
-        with open(file_path, 'rb') as file:
-            reader = PyPDF2.PdfReader(file)
-            total_pages = len(reader.pages)
-            text = [reader.pages[i].extract_text() for i in range(get_slice_size(total_pages))]
-            return "\n".join(text)
-
-    elif file_extension in ['.docx']:
-        doc = Document(file_path)
-        total_paragraphs = len(doc.paragraphs)
-        return "\n".join(para.text for para in doc.paragraphs[:get_slice_size(total_paragraphs)])
-
-    elif file_extension in ['.xlsx']:
-        wb = openpyxl.load_workbook(file_path)
-        sheet = wb.active
-        total_rows = len(list(sheet.rows))
-        return "\n".join(str(cell.value) for row in list(sheet.rows)[:get_slice_size(total_rows)] for cell in row)
-
-    elif file_extension in ['.csv']:
-        # Reading the CSV file using pandas and converting a portion of it to string
-        df = pd.read_csv(file_path)
-        slice_length = get_slice_size(len(df))
-        return df.head(slice_length).to_string(index=False)
-
-    elif file_extension in ['.jpg', '.jpeg', '.png']:
-        img = Image.open(file_path)
-        return pytesseract.image_to_string(img)
-    else:
-        raise ValueError("Error: Unsupported file format")
-
-def rename_files(dir_path):
-    global dir_to_rename
-    dir_to_rename = dir_path
-
-    file_list = os.listdir(dir_path)
-    for file in file_list:
-        f_path = dir_path + file
-        
-        # skip subdirectories
-        if not os.path.isfile(f_path):
-            continue
-
-        try:
-            if verbose:
-                print(f'Extracting text from {file}.')
-            file_text = None
-            file_text = extract_text_from_file(f_path)
-            if verbose:
-                print(f'Extracted text: {file_text}')
-        except Exception as e:
-            print(f'Skipping {file}. {e}')
-            continue
-
-        query_last_thread(f"""Generate a concise, meaningful file name for a file ({file}) containing the following text content: {file_text}\n
-            Then rename it using rename_file_interface.""")
-
-def create_thread():
-    thread = client.beta.threads.create()
-    # create threads.csv if not exists
-    if not os.path.exists(THREADS_CSV):
-        # write header to csv
-        with open(THREADS_CSV, 'w') as f:
-            f.write('thread_id\n')
-    # write thread id to csv
-    with open(THREADS_CSV, 'a') as f:
-        f.write(thread.id + '\n')
-    
-    return thread
-
-def create_run(thread, user_input):
-    run = submit_message(get_asst_id(), thread, user_input)
-    return run
-
-def submit_message(assistant_id, thread, user_message):
-    client.beta.threads.messages.create(
-        thread_id=thread.id, role="user", content=user_message
-    )
-    return client.beta.threads.runs.create(
-        thread_id=thread.id,
-        assistant_id=assistant_id,
-    )
-
-def wait_on_run(run, thread):
-    while run.status == "queued" or run.status == "in_progress":
-        run = client.beta.threads.runs.retrieve(
-            thread_id=thread.id,
-            run_id=run.id,
+        self.logger.info(
+            "Processing %d files in %s%s",
+            len(files),
+            dir_path,
+            " (dry run)" if self.dry_run else "",
         )
-        time.sleep(1)
-    return run
 
-def get_response(thread):
-    return client.beta.threads.messages.list(thread_id=thread.id, order="asc")
+        for file_path in files:
+            try:
+                self._rename_single(file_path)
+            except Exception as exc:  # noqa: BLE001
+                self.logger.error("Skipping %s: %s", file_path.name, exc)
 
-def thread_get(thread_id):
-    if thread_id == "new":
-        thread = create_thread()
-    else:
-        thread = client.beta.threads.retrieve(thread_id)
-    return thread
+    def _rename_single(self, file_path: Path) -> None:
+        original_name = file_path.name
+        content = self._extract_text_from_file(file_path)
+        if self.options.max_preview_chars and len(content) > self.options.max_preview_chars:
+            content = content[: self.options.max_preview_chars] + "...[truncated]"
 
-def get_last_thread_id():
-    with open(THREADS_CSV, 'r', newline='') as f:
-        reader = csv.reader(f)
-        last_line = None
-        for line in reader:
-            last_line = line
-        if last_line and last_line[0] == 'thread_id':
-            last_line = None
-        return last_line[0] if last_line else None
+        proposed_name = self._propose_name(original_name, content)
+        validated_name = self._validate_name(
+            proposed_name, original_name, content, file_path.suffix
+        )
 
-def steps_get(thread, run):
-    # get steps
-    run_steps = client.beta.threads.runs.steps.list(thread_id=thread.id, run_id=run.id, order="asc")
-    if verbose:
-        for step in run_steps.data:
-            step_details = step.step_details
-            print(json.dumps(show_json(step_details), indent=4))
-    return run_steps
+        if validated_name == original_name:
+            self.logger.info("No change for %s (name already compliant)", original_name)
+            return
 
-def thread_delete(thread_id):
-    client.beta.threads.delete(thread_id)
-    with open(THREADS_CSV, 'r', newline='') as file:
-        reader = csv.reader(file)
-        lines = [line for line in reader if line[0] != thread_id]
+        target_path = file_path.with_name(validated_name)
+        if target_path.exists():
+            raise FileExistsError(f"Target file already exists: {target_path.name}")
 
-    with open(THREADS_CSV, 'w', newline='') as file:
-        writer = csv.writer(file)
-        writer.writerows(lines)
-        
-    if verbose:
-        print("Deleted thread:", thread_id)
-
-def call_tool(run, thread):
-    # Extract single tool call
-    tool_calls = run.required_action.submit_tool_outputs.tool_calls
-
-    tool_outputs = []
-    for tool_call in tool_calls:
-        if verbose:
-            print(f'Tool call arguments: {tool_call.function.arguments}')
-        name = tool_call.function.name
-        arguments = json.loads(tool_call.function.arguments)
-
-        if verbose:
-            print("Function Name:", name)
-            print("Function Arguments:", arguments)
-
-    if name == "rename_uploaded_file":
-        responses = rename_uploaded_file(arguments["old_name"], arguments["new_name"])
-    elif name == "rename_file":
-        responses = rename_file(arguments["old_name"], arguments["new_name"])
-    
-    tool_outputs.append({"tool_call_id": tool_call.id, "output": json.dumps(responses)})
-    # submit tool outputs
-    run = client.beta.threads.runs.submit_tool_outputs(thread_id=thread.id, run_id=run.id, tool_outputs=tool_outputs)
-
-    return wait_on_run(run, thread)
-
-def query(user_input, thread=None):
-
-    if not thread:
-        # create thread and run
-        thread = create_thread()
-        if verbose:
-            print("Thread ID:", thread.id)
-
-    # create new run
-    try:
-        run = create_run(thread, user_input)
-    except openai.BadRequestError as e:
-        error_message = str(e)
-
-        # Handle error: 'Cannot add messages to <thread_> while a run <run_> is active'
-
-        # Extracting thread and run IDs using regex
-        thread_id = None
-        run_id = None
-        pattern = r"(thread_[\w\d]+)|(run_[\w\d]+)"
-        matches = re.findall(pattern, error_message)
-        for match in matches:
-            if match[0]:  # corresponds to thread ID
-                thread_id = match[0]
-            if match[1]:  # corresponds to run ID
-                run_id = match[1]
-
-        # Removing thread and run strings from the error message
-        cleaned_error_message = re.sub(pattern, "", error_message).strip()
-        # Check if error is due to an active run
-        if "Can't add messages to  while a run  is active" in cleaned_error_message:
-            if verbose:
-                print(f"Previous run {run_id} still active. Cancelling it...")
-            run = client.beta.threads.runs.cancel(thread_id=thread_id, run_id=run_id)
-            # wait for run cancellation
-            run = wait_on_run(run, thread)
-            
-            # create new run
-            if verbose:
-                print("Creating new run...")
-            run = create_run(thread, user_input)
+        if self.dry_run:
+            self.logger.info("[dry run] %s -> %s", original_name, validated_name)
         else:
-            raise e # other BadRequestErrors
+            file_path.rename(target_path)
+            self.logger.info("Renamed: %s -> %s", original_name, validated_name)
 
-    if verbose:
-        print("Run ID:", run.id)
+    def _propose_name(self, original_name: str, content: str) -> str:
+        prompt = f"""
+Current filename: "{original_name}"
+Document content (truncated): {content}
 
-    # wait for run completion
-    run = wait_on_run(run, thread)
-    
-    if verbose:
-        print("Run status: ", run.status)
-    if run.status == 'failed':
-        print('Run status: failed.')
-        print(f'Last Error: {run.last_error}')
+Return JSON only with the proposed new filename (including extension) under the key "new_name". Follow all naming rules strictly.
+"""
+        response = self.client.responses.create(
+            model=self.model,
+            input=[
+                {"role": "system", "content": asst_instructions},
+                {"role": "user", "content": prompt},
+            ],
+        )
 
-    while run.status == "requires_action":
-        run = call_tool(run, thread)
-    
+        self._log_usage_cost(response)
+        output_text = getattr(response, "output_text", "") or self._first_text_output(
+            response
+        )
+        if not output_text:
+            raise RuntimeError("Empty response from model.")
 
-    if run.status == "completed":
-        response = get_response(thread)
-        return pprint_msgs(response)
+        return self._extract_name_from_response(output_text.strip())
 
-def query_last_thread(q):
-    lt_id = get_last_thread_id()
-    #print(f'last_thread={lt_id}')
-    if not lt_id:
-        if verbose:
-            print(f'No threads in {THREADS_CSV}')
-        thread_get('new')
-        lt_id = get_last_thread_id()
-        if verbose:
-            print(f'Created new thread: {lt_id}')
-    return query(q, thread_get(lt_id))
+    def _extract_name_from_response(self, output_text: str) -> str:
+        try:
+            data = json.loads(output_text)
+            if isinstance(data, dict) and "new_name" in data:
+                return str(data["new_name"]).strip()
+        except json.JSONDecodeError:
+            pass
 
-def main(args):
-    global verbose
-    verbose = args.verbose
+        match = re.search(r'"new_name"\s*:\s*"([^"]+)"', output_text)
+        if match:
+            return match.group(1).strip()
 
-    if args.asst_create:
-        asst = create_assistant()
-    elif args.asst_update:
-        update_assistant()
-    elif args.asst_file_upload:
-        upload_file_for_asst(args.asst_file_upload)
-    elif args.files_list:
-        show_json(client.files.list())
-    elif args.file_delete:
-        file_delete(args.file_delete)
-    elif args.files_rename:
-        rename_files(args.files_rename)
-    elif args.query_new:
-        query(args.query_new, None)
-    elif args.query_last_thread:
-        query_last_thread(args.query_last_thread)
-    elif args.thread_get:
-        thread = thread_get(args.thread_get)
-        return thread
-    elif args.thread_delete:
-        thread_delete(args.thread_delete)
-    elif args.steps_get:
-        thread = client.beta.threads.retrieve(args.steps_get[0])
-        run = client.beta.threads.runs.retrieve(thread_id=thread.id, run_id=args.steps_get[1])
-        return steps_get(thread, run)
+        first_line = output_text.splitlines()[0].strip()
+        if first_line:
+            return first_line
+        raise ValueError("Could not parse new filename from model output.")
+
+    def _validate_name(
+        self, name: str, original_name: str, content: str, original_ext: str
+    ) -> str:
+        cleaned = name.strip().replace("_", " ").replace("-", " ")
+        base, ext = os.path.splitext(cleaned)
+        if not ext:
+            ext = original_ext
+        elif ext.lower() != original_ext.lower():
+            base = cleaned[: -len(ext)]
+            ext = original_ext
+
+        base = self._strip_existing_date(base)
+        base_clean = base.strip() or Path(original_name).stem
+        base_clean = self._strip_leading_numbers(base_clean)
+        base_clean = re.sub(r"\s+", " ", base_clean).strip()
+        date_prefix = (
+            self._earliest_date(content)
+            or self._date_in_string(base_clean)
+            or self._date_in_string(original_name)
+            or "Date Unknown"
+        )
+
+        final_name = self._assemble_with_length(date_prefix, base_clean, ext)
+        return final_name
+
+    def _strip_existing_date(self, name: str) -> str:
+        return DATE_PREFIX_PATTERN.sub("", name).strip()
+
+    def _strip_leading_numbers(self, text: str) -> str:
+        return re.sub(r"^[0-9\s.-]+", "", text).strip()
+
+    def _assemble_with_length(self, date_prefix: str, base: str, ext: str) -> str:
+        separator = " - "
+        budget = FILENAME_MAX_LEN - len(ext) - len(date_prefix) - len(separator)
+        if budget < 1:
+            raise ValueError("Filename budget too small for required components.")
+        if len(base) > budget:
+            base = base[:budget].rsplit(" ", 1)[0] or base[:budget]
+        return f"{date_prefix}{separator}{base}{ext}"
+
+    def _earliest_date(self, text: str) -> Optional[str]:
+        candidates: list[datetime] = []
+
+        for match in ISO_DATE_PATTERN.finditer(text):
+            try:
+                candidates.append(
+                    datetime(year=int(match.group(1)), month=int(match.group(2)), day=int(match.group(3)))
+                )
+            except ValueError:
+                continue
+
+        for match in SHORT_DATE_PATTERN.finditer(text):
+            month, day, year_raw = match.groups()
+            year = int(year_raw)
+            if year < 100:
+                year += 2000 if year < 50 else 1900
+            try:
+                candidates.append(datetime(year=year, month=int(month), day=int(day)))
+            except ValueError:
+                continue
+
+        month_map = {
+            "january": 1,
+            "february": 2,
+            "march": 3,
+            "april": 4,
+            "may": 5,
+            "june": 6,
+            "july": 7,
+            "august": 8,
+            "september": 9,
+            "october": 10,
+            "november": 11,
+            "december": 12,
+            "jan": 1,
+            "feb": 2,
+            "mar": 3,
+            "apr": 4,
+            "jun": 6,
+            "jul": 7,
+            "aug": 8,
+            "sep": 9,
+            "sept": 9,
+            "oct": 10,
+            "nov": 11,
+            "dec": 12,
+        }
+        for match in MONTH_NAME_PATTERN.finditer(text):
+            month_name, day, year_raw = match.groups()
+            month_num = month_map.get(month_name.lower())
+            if not month_num:
+                continue
+            year = int(year_raw)
+            if year < 100:
+                year += 2000 if year < 50 else 1900
+            try:
+                candidates.append(datetime(year=year, month=month_num, day=int(day)))
+            except ValueError:
+                continue
+
+        spaced = re.compile(r"(\d{4})[ .](\d{2})[ .](\d{2})")
+        for match in spaced.finditer(text):
+            try:
+                candidates.append(
+                    datetime(year=int(match.group(1)), month=int(match.group(2)), day=int(match.group(3)))
+                )
+            except ValueError:
+                continue
+
+        dotted = re.compile(r"(\d{4})[.](\d{2})[.](\d{2})")
+        for match in dotted.finditer(text):
+            try:
+                candidates.append(
+                    datetime(year=int(match.group(1)), month=int(match.group(2)), day=int(match.group(3)))
+                )
+            except ValueError:
+                continue
+
+        if not candidates:
+            return None
+        return min(candidates).strftime("%Y-%m-%d")
+
+    def _date_in_string(self, text: str) -> Optional[str]:
+        date = self._earliest_date(text)
+        return date
+
+    def _extract_text_from_file(self, file_path: Path) -> str:
+        ext = file_path.suffix.lower()
+        if ext == ".txt":
+            return self._extract_text_from_txt(file_path)
+        if ext == ".pdf":
+            return self._extract_text_from_pdf(file_path)
+        if ext == ".docx":
+            return self._extract_text_from_docx(file_path)
+        if ext == ".xlsx":
+            return self._extract_text_from_xlsx(file_path)
+        if ext == ".csv":
+            return self._extract_text_from_csv(file_path)
+        if ext in {".jpg", ".jpeg", ".png"}:
+            return self._extract_text_from_image(file_path)
+        raise ValueError(f"Unsupported file format: {ext}")
+
+    def _slice_count(self, total: int) -> int:
+        count = max(1, int(total * self.options.percent / 100))
+        return count
+
+    def _extract_text_from_txt(self, file_path: Path) -> str:
+        with file_path.open(encoding="utf-8") as file:
+            lines = file.readlines()
+        return "".join(lines[: self._slice_count(len(lines))])
+
+    def _extract_text_from_pdf(self, file_path: Path) -> str:
+        try:
+            with file_path.open("rb") as file:
+                reader = PyPDF2.PdfReader(file)
+                total_pages = len(reader.pages)
+                page_count = min(self._slice_count(total_pages), total_pages)
+                text = []
+                for idx in range(page_count):
+                    page_text = reader.pages[idx].extract_text() or ""
+                    if page_text.strip():
+                        text.append(page_text)
+
+            extracted = "\n".join(text).strip()
+            if extracted or not self.options.use_pdf_images:
+                return extracted or "[No extractable text found]"
+
+            images = convert_from_path(file_path, first_page=1, last_page=min(5, total_pages))
+            vision_texts = []
+            for img in images[:3]:
+                img_bytes = io.BytesIO()
+                img.save(img_bytes, format="JPEG")
+                img_bytes = img_bytes.getvalue()
+                page_text = self._extract_text_with_vision(img_bytes)
+                if page_text.strip():
+                    vision_texts.append(page_text)
+            return "\n\n".join(vision_texts) if vision_texts else "[Scanned PDF - no readable text found]"
+        except Exception as exc:  # noqa: BLE001
+            self.logger.error("Error reading PDF %s: %s", file_path.name, exc)
+            return "[Error reading PDF file]"
+
+    def _extract_text_from_docx(self, file_path: Path) -> str:
+        doc = Document(file_path)
+        paragraphs = doc.paragraphs
+        count = self._slice_count(len(paragraphs))
+        return "\n".join(para.text for para in paragraphs[:count])
+
+    def _extract_text_from_xlsx(self, file_path: Path) -> str:
+        wb = load_workbook(file_path, read_only=True)
+        sheet = wb.active
+        rows = list(sheet.rows)
+        count = self._slice_count(len(rows))
+        return "\n".join(
+            str(cell.value) for row in rows[:count] for cell in row if cell.value is not None
+        )
+
+    def _extract_text_from_csv(self, file_path: Path) -> str:
+        df = pd.read_csv(file_path)
+        count = self._slice_count(len(df))
+        return df.head(count).to_string(index=False)
+
+    def _extract_text_from_image(self, file_path: Path) -> str:
+        try:
+            if self.options.use_vision:
+                llm_text = self._extract_text_with_vision(file_path)
+                if llm_text and llm_text.strip():
+                    return llm_text
+            image = Image.open(file_path)
+            return pytesseract.image_to_string(image)
+        except Exception as exc:  # noqa: BLE001
+            self.logger.error("Error reading image %s: %s", file_path.name, exc)
+            return "[Error reading image file]"
+
+    def _extract_text_with_vision(self, image_path_or_bytes: Path | bytes) -> str:
+        try:
+            if isinstance(image_path_or_bytes, bytes):
+                image_data = base64.b64encode(image_path_or_bytes).decode("utf-8")
+            else:
+                with open(image_path_or_bytes, "rb") as f:
+                    image_data = base64.b64encode(f.read()).decode("utf-8")
+
+            response = self.client.responses.create(
+                model=self.vision_model,
+                input=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": "Extract all text content from this image. Return only the text content without commentary.",
+                            },
+                            {
+                                "type": "input_image",
+                                "image_url": f"data:image/jpeg;base64,{image_data}",
+                            },
+                        ],
+                    }
+                ],
+                max_output_tokens=4000,
+            )
+            raw_text = getattr(response, "output_text", "") or self._first_text_output(response)
+            return self._clean_vision_text(raw_text)
+        except Exception as exc:  # noqa: BLE001
+            self.logger.error("Vision extraction failed: %s", exc)
+            return ""
+
+    def _first_text_output(self, response) -> str:
+        try:
+            for item in response.output[0].content:
+                if getattr(item, "type", "") == "output_text":
+                    return item.text
+        except Exception:
+            return ""
+        return ""
+
+    def _clean_vision_text(self, text: str) -> str:
+        """Remove obvious noise/base64-like blobs from vision output."""
+        if not text:
+            return ""
+        stripped = text.strip()
+        whitespace_ratio = sum(1 for c in stripped if c.isspace()) / max(len(stripped), 1)
+        base64ish = re.fullmatch(r"[A-Za-z0-9+/=\s]+", stripped) is not None
+        long_and_dense = len(stripped) > 500 and whitespace_ratio < 0.05
+        if base64ish and long_and_dense:
+            return ""
+        return stripped
+
+    def _log_usage_cost(self, response) -> None:
+        usage = getattr(response, "usage", None)
+        if not usage:
+            return
+        input_tokens = getattr(usage, "input_tokens", None) or usage.get("input_tokens", 0)
+        output_tokens = getattr(usage, "output_tokens", None) or usage.get("output_tokens", 0)
+        model_name = getattr(response, "model", None) or self.model
+
+        cost_str = ""
+        if self.pricing:
+            input_cost = (input_tokens / 1_000_000) * self.pricing.input_per_million
+            output_cost = (output_tokens / 1_000_000) * self.pricing.output_per_million
+            total_cost = input_cost + output_cost
+            cost_str = (
+                f" | est cost ${total_cost:.6f} "
+                f"(in ${input_cost:.6f}, out ${output_cost:.6f})"
+            )
+
+        self.logger.info(
+            "Usage [%s]: input=%s tokens, output=%s tokens%s",
+            model_name,
+            input_tokens,
+            output_tokens,
+            cost_str,
+        )
+
+
+def load_creds() -> dict:
+    if not CREDS_PATH.exists():
+        raise FileNotFoundError(f"Missing credentials file: {CREDS_PATH}")
+    with CREDS_PATH.open() as fh:
+        return json.load(fh)
+
+
+def build_client() -> openai.OpenAI:
+    creds = load_creds()
+    return openai.OpenAI(api_key=creds["openai_api_key"])
+
+
+def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Rename files in a directory based on content using OpenAI Responses API."
+    )
+    parser.add_argument("--files_rename", "-fr", type=Path, help="Directory containing files to rename")
+    parser.add_argument("--dry_run", "-dr", action="store_true", help="Preview renames without writing")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
+    parser.add_argument(
+        "--model",
+        "-m",
+        type=str,
+        default=DEFAULT_MODEL,
+        help="OpenAI model to use (default: gpt-5.2)",
+    )
+    parser.add_argument(
+        "--vision_model",
+        type=str,
+        default=DEFAULT_VISION_MODEL,
+        help="OpenAI vision-capable model for OCR fallback (default: gpt-4o)",
+    )
+    parser.add_argument(
+        "--extraction_percent",
+        "-p",
+        type=int,
+        default=100,
+        help="Percent of file to sample from the start (1-100)",
+    )
+    parser.add_argument(
+        "--max_preview_chars",
+        "-mpc",
+        type=int,
+        default=None,
+        help="Maximum characters of extracted text to send to the model (omit for no limit)",
+    )
+    parser.add_argument(
+        "--disable_pdf_images",
+        action="store_true",
+        help="Skip image-based extraction for PDFs",
+    )
+    parser.add_argument(
+        "--disable_vision",
+        action="store_true",
+        help="Skip vision model extraction for images",
+    )
+    parser.add_argument(
+        "--price_in",
+        type=float,
+        help="Override input cost per 1M tokens for the chosen model",
+    )
+    parser.add_argument(
+        "--price_out",
+        type=float,
+        help="Override output cost per 1M tokens for the chosen model",
+    )
+    parser.add_argument(
+        "--openai_log_level",
+        type=str,
+        choices=["debug", "info", "warning", "error", "critical", "none"],
+        default="none",
+        help="OpenAI client log level (default: none to suppress HTTP debug).",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: Optional[Sequence[str]] = None) -> None:
+    args = parse_args(argv)
+    if not args.files_rename:
+        raise SystemExit("Please provide --files_rename <directory>.")
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(levelname)s %(message)s",
+    )
+
+    openai.log = None if args.openai_log_level == "none" else args.openai_log_level
+
+    options = ExtractionOptions(
+        percent=max(1, min(args.extraction_percent, 100)),
+        use_pdf_images=not args.disable_pdf_images,
+        use_vision=not args.disable_vision,
+        max_preview_chars=args.max_preview_chars,
+    )
+
+    pricing = MODEL_PRICING.get(args.model)
+    if args.price_in is not None or args.price_out is not None:
+        pricing = Pricing(
+            input_per_million=args.price_in or (pricing.input_per_million if pricing else 0.0),
+            output_per_million=args.price_out or (pricing.output_per_million if pricing else 0.0),
+        )
+
+    client = build_client()
+    renamer = FileRenamerAssistant(
+        client,
+        options=options,
+        verbose=args.verbose,
+        dry_run=args.dry_run,
+        model=args.model,
+        vision_model=args.vision_model,
+        pricing=pricing,
+    )
+    renamer.rename_directory(args.files_rename)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='OpenAI Assistant to rename directory files in a given directory.')
-    parser.add_argument('--asst_create', '-ac', action='store_true', help='Create the Assistant')
-    parser.add_argument('--asst_update', '-au', action='store_true', help='Update the Assistant')
-    parser.add_argument('--asst_file_upload', '-afu', type=str, help='Upload file for Assistant to retrieve; input: file_path')
-    parser.add_argument('--files_list', '-fl', action='store_true', help='List organization\'s files')
-    parser.add_argument('--file_delete', '-fd', type=str, help='Delete file; input: file_id')
-    parser.add_argument('--files_rename', '-fr', type=str, help='Rename all files in directory; input: dir_path')
-    parser.add_argument('--query_new', '-qn', type=str, help='Create new thread and run query')
-    parser.add_argument('--query_last_thread', '-qlt', type=str, help='Append query to last thread')
-    parser.add_argument('--thread_get', '-tg', type=str, help='Get a thread; input: thread_id, "new"')
-    parser.add_argument('--thread_delete', '-td', type=str, help='Delete a thread; input: thread_id')
-    parser.add_argument('--steps_get', '-sg', nargs=2, help='Get run steps; input: thread_id, run_id')
-    parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose output')
-
-    main(parser.parse_args())
+    main()
