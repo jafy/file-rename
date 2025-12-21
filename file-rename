@@ -3,7 +3,14 @@
 # File Renaming Assistant Wrapper Script
 # This script activates the virtual environment and runs the file renaming assistant
 
-SCRIPT_DIR="/Users/jeff/Documents/Personal/Code/asst-file-renamer"
+# Resolve the directory of this script (follows symlinks)
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 VENV_PATH="$SCRIPT_DIR/venv"
 SCRIPT_PATH="$SCRIPT_DIR/file_renaming_asst.py"
 ORIGINAL_DIR="$PWD"
@@ -26,11 +33,16 @@ cd "$SCRIPT_DIR" || {
     exit 1
 }
 
-# Activate virtual environment
-source "$VENV_PATH/bin/activate" || {
-    echo "Error: Cannot activate virtual environment: $VENV_PATH"
-    exit 1
-}
+# Choose Python interpreter (venv if available, otherwise system python3)
+if [ -f "$VENV_PATH/bin/activate" ]; then
+    # shellcheck source=/dev/null
+    source "$VENV_PATH/bin/activate" || {
+        echo "Warning: Could not activate virtual environment at $VENV_PATH; falling back to system python3."
+    }
+    PYTHON_BIN="${VENV_PATH}/bin/python"
+else
+    PYTHON_BIN="python3"
+fi
 
 # Run the Python script with processed arguments
-python "$SCRIPT_PATH" "${ARGS[@]}"
+"$PYTHON_BIN" "$SCRIPT_PATH" "${ARGS[@]}"

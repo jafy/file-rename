@@ -65,18 +65,34 @@ options:
 
 ## Run from anywhere (macOS)
 
-Add a small shell function so you can call the renamer from any directory:
+Use the bundled `file-rename` wrapper (it finds the repo automatically, even when symlinked):
 
-1. Ensure dependencies are installed (ideally in a venv) and note this repo path, e.g. `/Users/jeff/Documents/Personal/Code/asst-file-renamer`.
-2. Add to your `~/.zshrc` (or `~/.bash_profile`):
+1. Make it executable: `chmod +x file-rename`
+2. Put it on your `PATH` (adjust repo path as needed):
    ```sh
-   file-rename() {
-     /usr/bin/python3 /Users/jeff/Documents/Personal/Code/asst-file-renamer/file_renaming_asst.py -fr "$1" "${@:2}"
-   }
+   ln -s "$(pwd)/file-rename" /usr/local/bin/file-rename
    ```
-   Then reload your shell: `source ~/.zshrc`.
-3. Usage examples from anywhere:
+   Ensure `/usr/local/bin` is on your `PATH`. The script will use the repo’s `venv` if present, otherwise `python3`.
+3. Usage from anywhere:
    - Dry run with verbose logs: `file-rename /path/to/files --dry_run -v`
    - Set preview percent: `file-rename /path/to/files -p 50`
 
-If you prefer a standalone script, create `/usr/local/bin/file-rename` with the same command and `chmod +x /usr/local/bin/file-rename` (ensure `/usr/local/bin` is on your `PATH`). Use your venv’s Python path if needed.
+Alternatively, add a shell function with your repo location:
+```sh
+REPO_DIR="/path/to/asst-file-renamer"
+file-rename() {
+  /usr/bin/python3 "$REPO_DIR/file_renaming_asst.py" -fr "$1" "${@:2}"
+}
+```
+Reload your shell after adding to `~/.zshrc` or `~/.bash_profile`.
+
+## Virtual environment (recommended)
+
+Set up an isolated Python environment in this repo and install dependencies:
+```sh
+cd /path/to/asst-file-renamer
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+To use the CLI inside the venv, activate it first (`source venv/bin/activate`) or rely on the `file-rename` wrapper, which will automatically use `./venv` if it exists. Deactivate with `deactivate` when you’re done.
