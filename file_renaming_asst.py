@@ -67,8 +67,8 @@ class Pricing:
 
 MODEL_PRICING: dict[str, Pricing] = {
     # Override via CLI flags if these differ from your account pricing.
-    "gpt-5.2": Pricing(input_per_million=5.0, output_per_million=15.0),
-    "gpt-4o": Pricing(input_per_million=5.0, output_per_million=15.0),
+    "gpt-5.2": Pricing(input_per_million=1.75, output_per_million=14.0),
+    "gpt-4o": Pricing(input_per_million=2.50, output_per_million=10.0),
 }
 
 
@@ -98,7 +98,8 @@ class FileRenamerAssistant:
             raise ValueError(f"Not a directory: {dir_path}")
 
         files = sorted(
-            [p for p in dir_path.iterdir() if p.is_file() and not p.name.startswith(".")]
+            [p for p in dir_path.iterdir() if p.is_file()
+             and not p.name.startswith(".")]
         )
         if not files:
             self.logger.info("No files found to rename in %s", dir_path)
@@ -121,7 +122,8 @@ class FileRenamerAssistant:
         original_name = file_path.name
         content = self._extract_text_from_file(file_path)
         if self.options.max_preview_chars and len(content) > self.options.max_preview_chars:
-            content = content[: self.options.max_preview_chars] + "...[truncated]"
+            content = content[: self.options.max_preview_chars] + \
+                "...[truncated]"
 
         proposed_name = self._propose_name(original_name, content)
         validated_name = self._validate_name(
@@ -129,18 +131,22 @@ class FileRenamerAssistant:
         )
 
         if validated_name == original_name:
-            self.logger.info("No change for %s (name already compliant)", original_name)
+            self.logger.info(
+                "No change for %s (name already compliant)", original_name)
             return
 
         target_path = file_path.with_name(validated_name)
         if target_path.exists():
-            raise FileExistsError(f"Target file already exists: {target_path.name}")
+            raise FileExistsError(
+                f"Target file already exists: {target_path.name}")
 
         if self.dry_run:
-            self.logger.info("[dry run] %s -> %s", original_name, validated_name)
+            self.logger.info("[dry run] %s -> %s",
+                             original_name, validated_name)
         else:
             file_path.rename(target_path)
-            self.logger.info("Renamed: %s -> %s", original_name, validated_name)
+            self.logger.info("Renamed: %s -> %s",
+                             original_name, validated_name)
 
     def _propose_name(self, original_name: str, content: str) -> str:
         prompt = f"""
@@ -216,9 +222,11 @@ Return JSON only with the proposed new filename (including extension) under the 
 
     def _assemble_with_length(self, date_prefix: str, base: str, ext: str) -> str:
         separator = " - "
-        budget = FILENAME_MAX_LEN - len(ext) - len(date_prefix) - len(separator)
+        budget = FILENAME_MAX_LEN - \
+            len(ext) - len(date_prefix) - len(separator)
         if budget < 1:
-            raise ValueError("Filename budget too small for required components.")
+            raise ValueError(
+                "Filename budget too small for required components.")
         if len(base) > budget:
             base = base[:budget].rsplit(" ", 1)[0] or base[:budget]
         return f"{date_prefix}{separator}{base}{ext}"
@@ -229,7 +237,8 @@ Return JSON only with the proposed new filename (including extension) under the 
         for match in ISO_DATE_PATTERN.finditer(text):
             try:
                 candidates.append(
-                    datetime(year=int(match.group(1)), month=int(match.group(2)), day=int(match.group(3)))
+                    datetime(year=int(match.group(1)), month=int(
+                        match.group(2)), day=int(match.group(3)))
                 )
             except ValueError:
                 continue
@@ -240,7 +249,8 @@ Return JSON only with the proposed new filename (including extension) under the 
             if year < 100:
                 year += 2000 if year < 50 else 1900
             try:
-                candidates.append(datetime(year=year, month=int(month), day=int(day)))
+                candidates.append(
+                    datetime(year=year, month=int(month), day=int(day)))
             except ValueError:
                 continue
 
@@ -279,7 +289,8 @@ Return JSON only with the proposed new filename (including extension) under the 
             if year < 100:
                 year += 2000 if year < 50 else 1900
             try:
-                candidates.append(datetime(year=year, month=month_num, day=int(day)))
+                candidates.append(
+                    datetime(year=year, month=month_num, day=int(day)))
             except ValueError:
                 continue
 
@@ -287,7 +298,8 @@ Return JSON only with the proposed new filename (including extension) under the 
         for match in spaced.finditer(text):
             try:
                 candidates.append(
-                    datetime(year=int(match.group(1)), month=int(match.group(2)), day=int(match.group(3)))
+                    datetime(year=int(match.group(1)), month=int(
+                        match.group(2)), day=int(match.group(3)))
                 )
             except ValueError:
                 continue
@@ -296,7 +308,8 @@ Return JSON only with the proposed new filename (including extension) under the 
         for match in dotted.finditer(text):
             try:
                 candidates.append(
-                    datetime(year=int(match.group(1)), month=int(match.group(2)), day=int(match.group(3)))
+                    datetime(year=int(match.group(1)), month=int(
+                        match.group(2)), day=int(match.group(3)))
                 )
             except ValueError:
                 continue
@@ -350,7 +363,8 @@ Return JSON only with the proposed new filename (including extension) under the 
             if extracted or not self.options.use_pdf_images:
                 return extracted or "[No extractable text found]"
 
-            images = convert_from_path(file_path, first_page=1, last_page=min(5, total_pages))
+            images = convert_from_path(
+                file_path, first_page=1, last_page=min(5, total_pages))
             vision_texts = []
             for img in images[:3]:
                 img_bytes = io.BytesIO()
@@ -393,13 +407,15 @@ Return JSON only with the proposed new filename (including extension) under the 
             image = Image.open(file_path)
             return pytesseract.image_to_string(image)
         except Exception as exc:  # noqa: BLE001
-            self.logger.error("Error reading image %s: %s", file_path.name, exc)
+            self.logger.error("Error reading image %s: %s",
+                              file_path.name, exc)
             return "[Error reading image file]"
 
     def _extract_text_with_vision(self, image_path_or_bytes: Path | bytes) -> str:
         try:
             if isinstance(image_path_or_bytes, bytes):
-                image_data = base64.b64encode(image_path_or_bytes).decode("utf-8")
+                image_data = base64.b64encode(
+                    image_path_or_bytes).decode("utf-8")
             else:
                 with open(image_path_or_bytes, "rb") as f:
                     image_data = base64.b64encode(f.read()).decode("utf-8")
@@ -423,7 +439,8 @@ Return JSON only with the proposed new filename (including extension) under the 
                 ],
                 max_output_tokens=4000,
             )
-            raw_text = getattr(response, "output_text", "") or self._first_text_output(response)
+            raw_text = getattr(response, "output_text",
+                               "") or self._first_text_output(response)
             return self._clean_vision_text(raw_text)
         except Exception as exc:  # noqa: BLE001
             self.logger.error("Vision extraction failed: %s", exc)
@@ -443,7 +460,8 @@ Return JSON only with the proposed new filename (including extension) under the 
         if not text:
             return ""
         stripped = text.strip()
-        whitespace_ratio = sum(1 for c in stripped if c.isspace()) / max(len(stripped), 1)
+        whitespace_ratio = sum(
+            1 for c in stripped if c.isspace()) / max(len(stripped), 1)
         base64ish = re.fullmatch(r"[A-Za-z0-9+/=\s]+", stripped) is not None
         long_and_dense = len(stripped) > 500 and whitespace_ratio < 0.05
         if base64ish and long_and_dense:
@@ -454,14 +472,18 @@ Return JSON only with the proposed new filename (including extension) under the 
         usage = getattr(response, "usage", None)
         if not usage:
             return
-        input_tokens = getattr(usage, "input_tokens", None) or usage.get("input_tokens", 0)
-        output_tokens = getattr(usage, "output_tokens", None) or usage.get("output_tokens", 0)
+        input_tokens = getattr(usage, "input_tokens",
+                               None) or usage.get("input_tokens", 0)
+        output_tokens = getattr(usage, "output_tokens",
+                                None) or usage.get("output_tokens", 0)
         model_name = getattr(response, "model", None) or self.model
 
         cost_str = ""
         if self.pricing:
-            input_cost = (input_tokens / 1_000_000) * self.pricing.input_per_million
-            output_cost = (output_tokens / 1_000_000) * self.pricing.output_per_million
+            input_cost = (input_tokens / 1_000_000) * \
+                self.pricing.input_per_million
+            output_cost = (output_tokens / 1_000_000) * \
+                self.pricing.output_per_million
             total_cost = input_cost + output_cost
             cost_str = (
                 f" | est cost ${total_cost:.6f} "
@@ -493,9 +515,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Rename files in a directory based on content using OpenAI Responses API."
     )
-    parser.add_argument("--files_rename", "-fr", type=Path, help="Directory containing files to rename")
-    parser.add_argument("--dry_run", "-dr", action="store_true", help="Preview renames without writing")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
+    parser.add_argument("--files_rename", "-fr", type=Path,
+                        help="Directory containing files to rename")
+    parser.add_argument("--dry_run", "-dr", action="store_true",
+                        help="Preview renames without writing")
+    parser.add_argument("--verbose", "-v",
+                        action="store_true", help="Verbose logging")
     parser.add_argument(
         "--model",
         "-m",
@@ -575,8 +600,10 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     pricing = MODEL_PRICING.get(args.model)
     if args.price_in is not None or args.price_out is not None:
         pricing = Pricing(
-            input_per_million=args.price_in or (pricing.input_per_million if pricing else 0.0),
-            output_per_million=args.price_out or (pricing.output_per_million if pricing else 0.0),
+            input_per_million=args.price_in or (
+                pricing.input_per_million if pricing else 0.0),
+            output_per_million=args.price_out or (
+                pricing.output_per_million if pricing else 0.0),
         )
 
     client = build_client()
