@@ -1,14 +1,14 @@
-![File Renamer Assistant logo](file_renamer_assistant_logo.png)
+![File Rename Assistant logo](file_rename_assistant_logo.png)
 
-# File Renaming Assistant
+# File Rename Assistant
 
-An OpenAI Assistant (API) for renaming files base on their contents, using Python, Bash, and Linux CLI.
+An OpenAI Assistant (API) for file-rename tasks based on each file’s contents, using Python, Bash, and Linux CLI.
 
-[File Renamer Helper app](https://chat.openai.com/g/g-O1sujw5iD-file-renamer) available on OpenAI's GPT store, to help install, use and understand this repository.
+[File-Rename Helper app](https://chat.openai.com/g/g-O1sujw5iD-file-renamer) available on OpenAI's GPT store, to help install, use and understand this repository.
 
 ## Initial setup
 
-1. clone [File Renamer Assistant](https://github.com/toadlyBroodle/asst-file-renamer) repository:
+1. clone [File Rename Assistant](https://github.com/toadlyBroodle/asst-file-renamer) repository:
    `git clone https://github.com/toadlyBroodle/asst-file-renamer.git`
 2. install dependencies
    `pip3 install python-docx openpyxl PyPDF2 pillow pytesseract`
@@ -19,8 +19,6 @@ An OpenAI Assistant (API) for renaming files base on their contents, using Pytho
        "openai_api_key": "sk-####",
    }
    ```
-4. Create new assistant:
-   `python3 file_renamer_asst.py --asst_create`
 
 ## Usage, overview
 
@@ -33,10 +31,10 @@ EXTRACTION_PERCENT variable may need to be adjusted to achieving accurate new fi
 
 Disclaimer: This assistant does **not** upload files directly to OpenAI, but rather parses files locally to extract small percentage of beginning text contexts. This text summary is then necessarily sent to OpenAI API for analysis to generate new file names. Use with discretion and at your own risk.
 
-All the included functions are not necessarily used for renaming files, but are nonetheless included for user customization purposes, as well as to provide a demonstrative, documented, example of how to create and use OpenAI Assistants API.
+All the included functions are not necessarily used to rename files, but are nonetheless included for user customization purposes, as well as to provide a demonstrative, documented, example of how to create and use OpenAI Assistants API.
 
 ```
-usage: file_renaming_asst.py [-h] [--files_rename FILES_RENAME] [--dry_run] [--verbose] [--extraction_percent EXTRACTION_PERCENT]
+usage: file_rename_asst.py [-h] [--files_rename FILES_RENAME] [--dry_run] [--verbose] [--extraction_percent EXTRACTION_PERCENT]
                              [--max_preview_chars MAX_PREVIEW_CHARS] [--disable_pdf_images] [--disable_vision] [--model MODEL] [--vision_model VISION_MODEL]
                              [--price_in PRICE_IN] [--price_out PRICE_OUT] [--openai_log_level {debug,info,warning,error,critical,none}]
 
@@ -81,7 +79,7 @@ Alternatively, add a shell function with your repo location:
 ```sh
 REPO_DIR="/path/to/asst-file-renamer"
 file-rename() {
-  /usr/bin/python3 "$REPO_DIR/file_renaming_asst.py" -fr "$1" "${@:2}"
+  /usr/bin/python3 "$REPO_DIR/file_rename_asst.py" -fr "$1" "${@:2}"
 }
 ```
 Reload your shell after adding to `~/.zshrc` or `~/.bash_profile`.

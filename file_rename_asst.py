@@ -72,7 +72,7 @@ MODEL_PRICING: dict[str, Pricing] = {
 }
 
 
-class FileRenamerAssistant:
+class FileRenameAssistant:
     def __init__(
         self,
         client: openai.OpenAI,
@@ -90,7 +90,7 @@ class FileRenamerAssistant:
         self.model = model
         self.vision_model = vision_model
         self.pricing = pricing
-        self.logger = logging.getLogger("file_renamer")
+        self.logger = logging.getLogger("file_rename")
         self.logger.setLevel(logging.DEBUG if verbose else logging.INFO)
 
     def rename_directory(self, dir_path: Path) -> None:
@@ -607,7 +607,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         )
 
     client = build_client()
-    renamer = FileRenamerAssistant(
+    assistant = FileRenameAssistant(
         client,
         options=options,
         verbose=args.verbose,
@@ -616,7 +616,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         vision_model=args.vision_model,
         pricing=pricing,
     )
-    renamer.rename_directory(args.files_rename)
+    assistant.rename_directory(args.files_rename)
 
 
 if __name__ == "__main__":
