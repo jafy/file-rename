@@ -1,3 +1,5 @@
+#!/usr/bin/env python3.12
+
 import argparse
 import base64
 import io
@@ -5,6 +7,7 @@ import json
 import logging
 import os
 import re
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -37,6 +40,12 @@ MONTH_NAME_PATTERN = re.compile(
     r")\s+(\d{1,2})(?:st|nd|rd|th)?[\s,]+(\d{2,4})",
     re.IGNORECASE,
 )
+
+if sys.version_info < (3, 9) or sys.version_info >= (3, 13):
+    raise SystemExit(
+        "file_rename_asst.py requires Python 3.9–3.12. "
+        "Install a compatible Python (e.g., via pyenv or Homebrew) and retry."
+    )
 
 
 asst_instructions = """You help users rename files by generating a concise and descriptive new name based on the file text content.

@@ -8,6 +8,8 @@ An OpenAI Assistant (API) for file-rename tasks based on each file’s contents,
 
 ## Initial setup
 
+> Python 3.10–3.12 is recommended. The `openai` client currently restricts installs on 3.13+. If you’re on 3.13, install a 3.12 runtime (e.g., `brew install python@3.12` or `pyenv install 3.12.x`) and rerun the steps below.
+
 1. clone [File Rename Assistant](https://github.com/toadlyBroodle/asst-file-renamer) repository:
    `git clone https://github.com/toadlyBroodle/asst-file-renamer.git`
 2. install dependencies
